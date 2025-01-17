@@ -117,6 +117,7 @@ func (s *Scraper) CollectPerformanceMetrics() {
 
 	s.collectQueriesMetrics(ctx, pc)
 	s.collectMetricsPerDB(ctx, pc)
+	s.collectTempFileMetrics(ctx, pc)
 	s.collectCommonPerfMetrics(ctx, pc)
 	s.collectCountStatMetrics(ctx, pc)
 	logger.Info("Performance metrics collection finished")
