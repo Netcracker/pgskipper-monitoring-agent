@@ -1,7 +1,6 @@
 module github.com/Netcracker/pgskipper-monitoring-agent
 
-go 1.22.0
-toolchain go1.24.1
+go 1.23.0
 
 require (
 	github.com/google/uuid v1.6.0
