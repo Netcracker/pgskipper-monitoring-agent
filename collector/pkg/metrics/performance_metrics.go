@@ -128,23 +128,65 @@ func (s *Scraper) CollectPerformanceMetrics() {
 	logger.Info("Performance metrics collection finished")
 }
 
+// func (s *Scraper) collectLargeObjectMetrics(ctx context.Context, pg *postgres.PostgresConnector) {
+// 	logger.Info("Large object metrics collection started")
+// 	columns, rows := getData(ctx, pg, largeObjectQuery)
+// 	if len(rows) == 0 {
+// 		logger.Warn("No large object data found")
+// 		return
+// 	}
+
+// 	for _, row := range rows {
+// 		labels := gauges.DefaultLabels()
+// 		for _, column := range columns {
+// 			value := fmt.Sprintf("%v", row[column])
+// 			s.metrics = append(s.metrics, NewMetric(fmt.Sprintf("ma_pg_large_object_%s", column)).withLabels(labels).setValue(value))
+// 		}
+// 	}
+
+// 	logger.Info("Large object metrics collection finished")
+// }
+
 func (s *Scraper) collectLargeObjectMetrics(ctx context.Context, pg *postgres.PostgresConnector) {
-	logger.Info("Large object metrics collection started")
-	columns, rows := getData(ctx, pg, largeObjectQuery)
-	if len(rows) == 0 {
-		logger.Warn("No large object data found")
+	logger.Info("Large object metrics per DB collection started")
+
+	databases, err := getDatabasesList(ctx, pg)
+	if err != nil {
+		logger.Error("Failed to retrieve databases list for large object metrics")
 		return
 	}
 
-	for _, row := range rows {
-		labels := gauges.DefaultLabels()
-		for _, column := range columns {
-			value := fmt.Sprintf("%v", row[column])
-			s.metrics = append(s.metrics, NewMetric(fmt.Sprintf("ma_pg_large_object_%s", column)).withLabels(labels).setValue(value))
+	defer func() {
+		_ = pg.EstablishConnForDB(ctx, postgres.PgDatabase)
+	}()
+
+	for _, db := range databases {
+		logger.Debug(fmt.Sprintf("Collecting large object metrics for DB: %s", db))
+		err = pg.EstablishConnForDB(ctx, db)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("Skipping DB %s due to connection issue", db))
+			continue
+		}
+
+		columns, rows := getData(ctx, pg, largeObjectQuery)
+		if len(rows) == 0 {
+			logger.Info(fmt.Sprintf("No large objects found in DB: %s", db))
+			continue
+		}
+
+		for _, row := range rows {
+			labels := gauges.DefaultLabels()
+			labels["datname"] = db
+
+			for _, column := range columns {
+				value := fmt.Sprintf("%v", row[column])
+				metricName := fmt.Sprintf("ma_pg_large_object_%s", column)
+				s.metrics = append(s.metrics, NewMetric(metricName).withLabels(labels).setValue(value))
+			}
 		}
 	}
 
-	logger.Info("Large object metrics collection finished")
+	logger.Info("Large object metrics per DB collection finished")
 }
 
 func (s *Scraper) collectTempFileMetrics(ctx context.Context, pg *postgres.PostgresConnector) {
