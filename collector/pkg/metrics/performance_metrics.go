@@ -128,25 +128,6 @@ func (s *Scraper) CollectPerformanceMetrics() {
 	logger.Info("Performance metrics collection finished")
 }
 
-// func (s *Scraper) collectLargeObjectMetrics(ctx context.Context, pg *postgres.PostgresConnector) {
-// 	logger.Info("Large object metrics collection started")
-// 	columns, rows := getData(ctx, pg, largeObjectQuery)
-// 	if len(rows) == 0 {
-// 		logger.Warn("No large object data found")
-// 		return
-// 	}
-
-// 	for _, row := range rows {
-// 		labels := gauges.DefaultLabels()
-// 		for _, column := range columns {
-// 			value := fmt.Sprintf("%v", row[column])
-// 			s.metrics = append(s.metrics, NewMetric(fmt.Sprintf("ma_pg_large_object_%s", column)).withLabels(labels).setValue(value))
-// 		}
-// 	}
-
-// 	logger.Info("Large object metrics collection finished")
-// }
-
 func (s *Scraper) collectLargeObjectMetrics(ctx context.Context, pg *postgres.PostgresConnector) {
 	logger.Info("Large object metrics per DB collection started")
 
@@ -160,6 +141,7 @@ func (s *Scraper) collectLargeObjectMetrics(ctx context.Context, pg *postgres.Po
 		_ = pg.EstablishConnForDB(ctx, postgres.PgDatabase)
 	}()
 
+	logger.Debug(fmt.Sprintf("Will Collect large object Stats for next dbs %v", databases))
 	for _, db := range databases {
 		logger.Debug(fmt.Sprintf("Collecting large object metrics for DB: %s", db))
 		err = pg.EstablishConnForDB(ctx, db)
