@@ -64,7 +64,7 @@ func (s *Scraper) CollectDRMetrics() {
 	}
 
 	if !isActive {
-		logger.Info("Current side is standby, skipping dr metrics collection ...")
+		logger.Info("Current site is standby, skipping dr metrics collection ...")
 		return
 	}
 
