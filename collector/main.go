@@ -91,7 +91,7 @@ func main() {
 		panic(err.Error())
 	}
 
-	dr := util.IsDRSchema()
+	dr := util.IsSiteManagerEnabled()
 	if dr {
 		log.Println("DR mode is enabled")
 	}

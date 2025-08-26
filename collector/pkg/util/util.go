@@ -551,6 +551,6 @@ func GetEnvValueFromPod(pod corev1.Pod, envName, defaultValue string) string {
 	return defaultValue
 }
 
-func IsDRSchema() bool {
-	return GetEnvBool("DR_METRICS", false)
+func IsSiteManagerEnabled() bool {
+	return GetEnv("SITE_MANAGER", "off") == "on"
 }

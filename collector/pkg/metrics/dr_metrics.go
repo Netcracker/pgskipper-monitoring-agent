@@ -16,13 +16,16 @@ package metrics
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"strings"
 
 	"github.com/Netcracker/pgskipper-monitoring-agent/collector/pkg/gauges"
 	"github.com/Netcracker/pgskipper-monitoring-agent/collector/pkg/k8s"
+	"github.com/Netcracker/pgskipper-monitoring-agent/collector/pkg/util"
 	"github.com/jackc/pgx/v5/pgtype"
 	"go.uber.org/zap"
 )
@@ -37,13 +40,34 @@ type ReplicaInfo struct {
 	ApplicationName string  `json:"application_name"`
 	IP              string  `json:"client_addr"`
 	LSN             string  `json:"replay_lsn"`
-	LagInSec        float64 `json:"replay_lag"`
+	LagInMs         float64 `json:"replay_lag"`
+}
+
+type ClusterInfo struct {
+	Members []Member `json:"members"`
+}
+
+type Member struct {
+	Role  string `json:"role"`
+	State string `json:"state"`
 }
 
 func (s *Scraper) CollectDRMetrics() {
 	logger.Info("DR metrics collection started")
 	defer s.HandleMetricCollectorStatus()
 	ctx := context.Background()
+
+	isActive, err := s.IsCurrentSiteActive(ctx)
+	if err != nil {
+		logger.Error("Error, while getting cluster status", zap.Error(err))
+		return
+	}
+
+	if !isActive {
+		logger.Info("Current side is standby, skipping dr metrics collection ...")
+		return
+	}
+
 	patroniPodsIP := getPatroniPodsIP(ctx)
 	standbyInfo, err := getStandbyInfo(ctx, patroniPodsIP)
 	if err != nil {
@@ -62,7 +86,7 @@ func (s *Scraper) CollectDRMetrics() {
 		labels := gauges.DefaultLabels()
 		labels["replica_ip"] = replica.IP
 		s.metrics = append(s.metrics, NewMetric("ma_pg_standby_replication_lag_in_bytes").withLabels(labels).setValue(lagInBytes))
-		s.metrics = append(s.metrics, NewMetric("ma_pg_standby_replication_lag_in_seconds").withLabels(labels).setValue(replica.LagInSec))
+		s.metrics = append(s.metrics, NewMetric("ma_pg_standby_replication_lag_in_ms").withLabels(labels).setValue(replica.LagInMs))
 	}
 
 	logger.Info("DR metrics collection finished")
@@ -124,7 +148,7 @@ func getStandbyInfo(ctx context.Context, patroniPodsIP []string) ([]ReplicaInfo,
 				ApplicationName: applicationName,
 				IP:              ip,
 				LSN:             lsnValue,
-				LagInSec:        float64(lag.Milliseconds()),
+				LagInMs:         float64(lag.Milliseconds()),
 			})
 		}
 	}
@@ -161,4 +185,35 @@ func getReplicationLag(ctx context.Context, replicaInfo ReplicaInfo) (float64, e
 	}
 
 	return 0, fmt.Errorf("no data found for replica %s", replicaInfo.IP)
+}
+
+func (s *Scraper) IsCurrentSiteActive(ctx context.Context) (bool, error) {
+	var response = ClusterInfo{}
+	protocol, _ := util.GetProtocol()
+	url := fmt.Sprintf("%spg-%s-api:8008/cluster", protocol, clusterName)
+
+	status, body, err := util.ProcessHttpRequest(s.httpClient, url, s.token)
+	if err != nil {
+		logger.Error(fmt.Sprintf("Cannot collect backup status metric. url %v", url))
+		return false, err
+	}
+	code := strings.Fields(status)[0]
+	statusCode, err := strconv.Atoi(code)
+	if statusCode != 200 || err != nil {
+		logger.Warn(fmt.Sprintf("Cannot collect cluster status for dr metrics. Error code %v", statusCode))
+		logger.Warn(fmt.Sprintf("Error: %v", err))
+		return false, err
+	}
+	err = json.Unmarshal(body, &response)
+	if err != nil {
+		Log.Error(fmt.Sprintf("Process cluster info Unmarshal Error: %s", err))
+		logger.Error(fmt.Sprintf("Error: %v", err))
+		return false, err
+	}
+	for _, member := range response.Members {
+		if member.Role == "leader" && member.State == "running" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
