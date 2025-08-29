@@ -26,20 +26,19 @@ import (
 	"github.com/Netcracker/pgskipper-monitoring-agent/collector/pkg/gauges"
 	"github.com/Netcracker/pgskipper-monitoring-agent/collector/pkg/k8s"
 	"github.com/Netcracker/pgskipper-monitoring-agent/collector/pkg/util"
-	"github.com/jackc/pgx/v5/pgtype"
 	"go.uber.org/zap"
 )
 
 const (
-	replicaInfoQuery = " SELECT usename, application_name, client_addr::text, replay_lsn::text, COALESCE(replay_lag, '0') FROM pg_stat_replication;"
-	lagInBytesQuery  = "SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '%s') AS lag_in_bytes;"
+	replicaInfoQuery = "SELECT usename, application_name, client_addr::text, pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn)::text AS lag_in_bytes," +
+		"COALESCE(replay_lag, '0') as reply_lag FROM pg_stat_replication where usename = 'replicator' and application_name like 'pg-%s-node%%';"
 )
 
 type ReplicaInfo struct {
 	Usename         string  `json:"usename"`
 	ApplicationName string  `json:"application_name"`
 	IP              string  `json:"client_addr"`
-	LSN             string  `json:"replay_lsn"`
+	LagInBytes      string  `json:"lag_in_bytes"`
 	LagInMs         float64 `json:"replay_lag"`
 }
 
@@ -78,14 +77,9 @@ func (s *Scraper) CollectDRMetrics() {
 	s.metrics = append(s.metrics, NewMetric("ma_pg_standby_leader_count").withLabels(gauges.DefaultLabels()).setValue(len(standbyInfo)))
 
 	for _, replica := range standbyInfo {
-		lagInBytes, err := getReplicationLag(ctx, replica)
-		if err != nil {
-			logger.Error("Error, while getting replication lag", zap.Error(err))
-			continue
-		}
 		labels := gauges.DefaultLabels()
 		labels["replica_ip"] = replica.IP
-		s.metrics = append(s.metrics, NewMetric("ma_pg_standby_replication_lag_in_bytes").withLabels(labels).setValue(lagInBytes))
+		s.metrics = append(s.metrics, NewMetric("ma_pg_standby_replication_lag_in_bytes").withLabels(labels).setValue(replica.LagInBytes))
 		s.metrics = append(s.metrics, NewMetric("ma_pg_standby_replication_lag_in_ms").withLabels(labels).setValue(replica.LagInMs))
 	}
 
@@ -109,7 +103,7 @@ func getStandbyInfo(ctx context.Context, patroniPodsIP []string) ([]ReplicaInfo,
 		return nil, err
 	}
 
-	rows, err := pc.Query(ctx, replicaInfoQuery)
+	rows, err := pc.Query(ctx, fmt.Sprintf(replicaInfoQuery, clusterName))
 	if err != nil {
 		return nil, err
 	}
@@ -119,16 +113,12 @@ func getStandbyInfo(ctx context.Context, patroniPodsIP []string) ([]ReplicaInfo,
 		var usename string
 		var applicationName string
 		var ip string
-		var lsn *string
+		var lagBytesPt *string
 		var lag time.Duration
-		err = rows.Scan(&usename, &applicationName, &ip, &lsn, &lag)
+		err = rows.Scan(&usename, &applicationName, &ip, &lagBytesPt, &lag)
 		if err != nil {
 			logger.Error("Error, while getting replica info", zap.Error(err))
 			return nil, err
-		}
-
-		if usename != "replicator" || !strings.Contains(applicationName, "pg-patroni-node") {
-			continue
 		}
 
 		isReplica := false
@@ -138,53 +128,22 @@ func getStandbyInfo(ctx context.Context, patroniPodsIP []string) ([]ReplicaInfo,
 				break
 			}
 		}
+
 		if !isReplica {
-			lsnValue := ""
-			if lsn != nil {
-				lsnValue = *lsn
+			lagInBytes := ""
+			if lagBytesPt != nil {
+				lagInBytes = *lagBytesPt
 			}
 			standbyInfo = append(standbyInfo, ReplicaInfo{
 				Usename:         usename,
 				ApplicationName: applicationName,
 				IP:              ip,
-				LSN:             lsnValue,
+				LagInBytes:      lagInBytes,
 				LagInMs:         float64(lag.Milliseconds()),
 			})
 		}
 	}
 	return standbyInfo, nil
-}
-
-func getReplicationLag(ctx context.Context, replicaInfo ReplicaInfo) (float64, error) {
-	rows, err := pc.Query(ctx, fmt.Sprintf(lagInBytesQuery, replicaInfo.LSN))
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-
-	if rows.Next() {
-		var numericLag pgtype.Numeric
-		err = rows.Scan(&numericLag)
-		if err != nil {
-			logger.Error("Error, while getting replication lag", zap.Error(err))
-			return 0, err
-		}
-
-		var lag pgtype.Float8
-		if numericLag.Valid {
-			lag, err = numericLag.Float64Value()
-			if err != nil {
-				logger.Error("Error, while getting replication lag", zap.Error(err))
-				return 0, err
-			}
-		} else {
-			return 0, fmt.Errorf("no data found for replica %s", replicaInfo.IP)
-		}
-
-		return lag.Float64, nil
-	}
-
-	return 0, fmt.Errorf("no data found for replica %s", replicaInfo.IP)
 }
 
 func (s *Scraper) IsCurrentSiteActive(ctx context.Context) (bool, error) {
